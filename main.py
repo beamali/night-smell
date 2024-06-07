@@ -4,7 +4,7 @@ import time
 import numpy as np
 import json
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
-
+from motor_control import read_gsr_data_from_arduino, stop_arduino_motor, start_arduino_motor
 
 BRAIN_LIMIT_LOW = 0 + 0.1
 BRAIN_LIMIT_HIGH = 100 - 0.1
@@ -24,6 +24,9 @@ class BrainData:
         self.ch_types = ['eeg'] * len(self.chan_in_use)
         self.board = self.initial_board()
         self.data = []
+        self.motor_last_change_time = time.time()
+        self.motor_started = False
+        self.gsr_data = []
 
     @property
     def params(self) -> BrainFlowInputParams:
@@ -58,6 +61,16 @@ class BrainData:
         finally:
             sock.close()
 
+    def read_gsr_data_from_arduino(self) -> None:
+        if time.time() - self.motor_last_change_time > 2000:
+            if self.motor_started:
+                stop_arduino_motor()
+                self.motor_started = False
+            else:
+                start_arduino_motor()
+                self.motor_started = True
+        self.gsr_data += read_gsr_data_from_arduino()
+
     def stream(self):
         threading.Thread(target=self.start_socket_stream).start()
         start_time = time.time()
@@ -65,7 +78,7 @@ class BrainData:
             continue
         average = np.mean(self.data)
         std = np.std(self.data)
-        print(f"avarge:{average } std:{std}")
+        print(f"avarge:{average} std:{std}")
 
     def stop_stream(self):
         # No explicit stop needed for socket stream
