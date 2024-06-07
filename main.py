@@ -2,15 +2,19 @@ import socket
 import sqlite3
 import threading
 import time
+
 import numpy as np
 import json
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
+from matplotlib import pyplot as plt, animation
+
 from motor_control import read_gsr_data_from_arduino, stop_arduino_motor, start_arduino_motor
 
-BRAIN_LIMIT_LOW = 0 + 0.1
-BRAIN_LIMIT_HIGH = 100 - 0.1
+BRAIN_LIMIT_HIGH = 0.5
+SUBCUTANEOUS_CONDUCTION_LIMIT_HIGH = 400
 MEASUREMENT_INDEX = 0
 THETA_INDEX = 4
+STD_LIMIT = 4.546125354443821
 
 
 class BrainData:
@@ -30,6 +34,23 @@ class BrainData:
         self.motor_last_change_time = time.time()
         self.motor_started = False
         self.gsr_data = []
+        self.fig, self.ax = plt.subplots()
+        self.float_values = []
+        self.line, = self.ax.plot(self.float_values)
+
+    def update_subcutaneous_conduction_graph(self, new_value):
+        # Append the new value to the list
+        self.float_values.append(new_value)
+
+        # Update the data of the line object
+        self.line.set_ydata(self.float_values)
+        self.line.set_xdata(range(len(self.float_values)))
+
+        # Set the limits of the plot
+        self.ax.set_xlim(0, len(self.float_values))
+        self.ax.set_ylim(0, 10)
+
+        return self.line,
 
     @property
     def params(self) -> BrainFlowInputParams:
@@ -45,6 +66,12 @@ class BrainData:
     @classmethod
     def return_to_normal(cls):
         stop_arduino_motor()
+
+    def get_initial_value(self):
+        conn = sqlite3.connect('night-smell.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM initial_values')
+        return cursor.fetchone()
 
     def initial_board(self) -> BoardShim:
         params = BrainFlowInputParams()
@@ -73,44 +100,44 @@ class BrainData:
             sock.close()
 
     def read_gsr_data_from_arduino(self) -> None:
-        if time.time() - self.motor_last_change_time > 2000:
-            if self.motor_started:
-                stop_arduino_motor()
-                self.motor_started = False
-            else:
-                start_arduino_motor()
-                self.motor_started = True
+        print("Data is", read_gsr_data_from_arduino())
         self.gsr_data += read_gsr_data_from_arduino()
 
     def stream(self, recording=False):
         threading.Thread(target=self.start_socket_stream).start()
+        threading.Thread(target=self.read_gsr_data_from_arduino).start()
         start_time = time.time()
         while time.time() - start_time < self.demo_length:
             time.sleep(self.BUFFER_PAUSE)
-            for i in self.data:
+            for i, theta_value in enumerate(self.data):
+                try:
+                    subcutaneous_conduction = self.gsr_data[i]
+                    ani = animation.FuncAnimation(self.fig, self.update_subcutaneous_conduction_graph, frames=self.gsr_data, blit=True)
+                    plt.show()
+                except IndexError:
+                    continue
                 if recording:
-                  self.save_results(i)
-                  continue
-                if i > 2 * self.NORMAL_STD:
+                    continue
+                if i >= BRAIN_LIMIT_HIGH + 2 * self.NORMAL_STD and subcutaneous_conduction >= SUBCUTANEOUS_CONDUCTION_LIMIT_HIGH:
                     print('measurement is too high')
                     self.run_relax_operation()
                     self.relaxing_mode = True
-                if i < 2 * self.NORMAL_STD and self.relaxing_mode:
+                elif i < 2 * self.NORMAL_STD and self.relaxing_mode or subcutaneous_conduction < SUBCUTANEOUS_CONDUCTION_LIMIT_HIGH:
                     self.return_to_normal()
                     self.relaxing_mode = False
-                self.save_results(i)
-
-        average = np.mean(self.data)
-        std = np.std(self.data)
-        print(f"avarge:{average} std:{std}")
+                self.save_results(theta_value=theta_value, subcutaneous_conduction=subcutaneous_conduction)
+        if recording:
+            average = np.mean(self.data)
+            std = np.std(self.data)
+            self.save_inital_value(average, std)
 
     def save_results(self, theta_value, subcutaneous_conduction):
-        conn = sqlite3.connect('night-smell.db')
-        cursor = conn.cursor()
-        cursor.executemany('''
-        INSERT INTO records (date, subcutaneous_conduction, theta_value, is_relax_mode_activated)
-        VALUES (?, ?, ?, ?)
-        ''', time.time(), subcutaneous_conduction, theta_value, int(self.relaxing_mode))
+        with open('results.json', 'a') as file:
+            json.dump({'theta_value': theta_value, 'subcutaneous_conduction': subcutaneous_conduction, "date": time.time(), "is_relax_mode_activated": self.relaxing_mode}, file)
+
+    def save_inital_value(self, average, std):
+        with open('initial_values.json', 'w') as file:
+            json.dump({'average': average, 'std': std}, file)
 
 
 def main(recording=False):

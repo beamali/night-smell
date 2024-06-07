@@ -10,24 +10,23 @@ def select_arudino_port() -> str | None:
     return None
 
 
-ARDUINO_PORT = select_arudino_port()
+ARDUINO_PORT = "/dev/cu.usbserial-110"
+print(ARDUINO_PORT)
+if ARDUINO_PORT is None:
+    raise ValueError("No Arduino found")
+ser = serial.Serial(ARDUINO_PORT, 9600)
 
 
 def start_arduino_motor(port: str = ARDUINO_PORT):
-    ser = serial.Serial(port, 9600)
-
     ser.write(bytearray([10]))
 
 
 def stop_arduino_motor(port: str = ARDUINO_PORT):
-    ser = serial.Serial(port, 9600)
-
     ser.write(bytearray([20]))
 
 
 def read_gsr_data_from_arduino(port: str = ARDUINO_PORT) -> list[bytes]:
-    ser = serial.Serial(port, 9600)
     data = []
     while ser.in_waiting:
-        data.append(ser.readline())
+        data.append(int(ser.readline()))
     return data
