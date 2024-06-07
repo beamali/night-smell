@@ -1,10 +1,12 @@
 import socket
+import sqlite3
 import threading
 import time
 import numpy as np
 import json
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
 
+from motor_control import start_arduino_motor, stop_arduino_motor
 
 BRAIN_LIMIT_LOW = 0 + 0.1
 BRAIN_LIMIT_HIGH = 100 - 0.1
@@ -16,6 +18,7 @@ class BrainData:
     MUSCLE_LIMIT_LOW = 0 + 0.1
     MUSCLE_LIMIT_HIGH = 100 - 0.1
     BUFFER_PAUSE = 2
+    NORMAL_STD = 0.5
 
     def __init__(self):
         self.chan_in_use = [7, 8]
@@ -24,6 +27,7 @@ class BrainData:
         self.ch_types = ['eeg'] * len(self.chan_in_use)
         self.board = self.initial_board()
         self.data = []
+        self.relaxing_mode = False
 
     @property
     def params(self) -> BrainFlowInputParams:
@@ -31,6 +35,14 @@ class BrainData:
         params.serial_port = "/dev/cu.usbserial-DM03H3QF"
         params.buffer_length = 256
         return params
+
+    @classmethod
+    def run_relax_operation(cls):
+        start_arduino_motor()
+
+    @classmethod
+    def return_to_normal(cls):
+        stop_arduino_motor()
 
     def initial_board(self) -> BoardShim:
         params = BrainFlowInputParams()
@@ -58,24 +70,41 @@ class BrainData:
         finally:
             sock.close()
 
-    def stream(self):
+    def stream(self, recording=False):
         threading.Thread(target=self.start_socket_stream).start()
         start_time = time.time()
         while time.time() - start_time < self.demo_length:
-            continue
+            time.sleep(self.BUFFER_PAUSE)
+            for i in self.data:
+                if recording:
+                  self.save_results(i)
+                  continue
+                if i > 2 * self.NORMAL_STD:
+                    print('measurement is too high')
+                    self.run_relax_operation()
+                    self.relaxing_mode = True
+                if i < 2 * self.NORMAL_STD and self.relaxing_mode:
+                    self.return_to_normal()
+                    self.relaxing_mode = False
+                self.save_results(i)
+
         average = np.mean(self.data)
         std = np.std(self.data)
         print(f"avarge:{average } std:{std}")
+        return average, std
 
-    def stop_stream(self):
-        # No explicit stop needed for socket stream
-        pass
+    def save_results(self, theta_value, subcutaneous_conduction):
+        conn = sqlite3.connect('night-smell.db')
+        cursor = conn.cursor()
+        cursor.executemany('''
+        INSERT INTO records (date, subcutaneous_conduction, theta_value, is_relax_mode_activated)
+        VALUES (?, ?, ?, ?)
+        ''', time.time(), subcutaneous_conduction, theta_value, int(self.relaxing_mode))
 
 
-def main():
+def main(recording=False):
     brain_data = BrainData()
-    brain_data.stream()
-    brain_data.stop_stream()
+    brain_data.stream(recording)
 
 
 main()
