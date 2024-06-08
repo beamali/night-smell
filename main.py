@@ -11,15 +11,13 @@ from matplotlib import pyplot as plt, animation
 from motor_control import read_gsr_data_from_arduino, stop_arduino_motor, start_arduino_motor
 
 BRAIN_LIMIT_HIGH = 0.5
-SUBCUTANEOUS_CONDUCTION_LIMIT_HIGH = 400
+SUBCUTANEOUS_CONDUCTION_LIMIT_HIGH = 20
 MEASUREMENT_INDEX = 0
 THETA_INDEX = 4
 STD_LIMIT = 4.546125354443821
 
 
 class BrainData:
-    MUSCLE_LIMIT_LOW = 0 + 0.1
-    MUSCLE_LIMIT_HIGH = 100 - 0.1
     BUFFER_PAUSE = 2
     NORMAL_STD = 0.5
 
@@ -34,23 +32,6 @@ class BrainData:
         self.motor_last_change_time = time.time()
         self.motor_started = False
         self.gsr_data = []
-        self.fig, self.ax = plt.subplots()
-        self.float_values = []
-        self.line, = self.ax.plot(self.float_values)
-
-    def update_subcutaneous_conduction_graph(self, new_value):
-        # Append the new value to the list
-        self.float_values.append(new_value)
-
-        # Update the data of the line object
-        self.line.set_ydata(self.float_values)
-        self.line.set_xdata(range(len(self.float_values)))
-
-        # Set the limits of the plot
-        self.ax.set_xlim(0, len(self.float_values))
-        self.ax.set_ylim(0, 10)
-
-        return self.line,
 
     @property
     def params(self) -> BrainFlowInputParams:
@@ -68,10 +49,8 @@ class BrainData:
         stop_arduino_motor()
 
     def get_initial_value(self):
-        conn = sqlite3.connect('night-smell.db')
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM initial_values')
-        return cursor.fetchone()
+        with open('initial_values.json', 'r') as file:
+            return json.load(file)
 
     def initial_board(self) -> BoardShim:
         params = BrainFlowInputParams()
@@ -100,29 +79,29 @@ class BrainData:
             sock.close()
 
     def read_gsr_data_from_arduino(self) -> None:
-        print("Data is", read_gsr_data_from_arduino())
         self.gsr_data += read_gsr_data_from_arduino()
 
     def stream(self, recording=False):
-        threading.Thread(target=self.start_socket_stream).start()
         threading.Thread(target=self.read_gsr_data_from_arduino).start()
+        threading.Thread(target=self.start_socket_stream).start()
         start_time = time.time()
         while time.time() - start_time < self.demo_length:
             time.sleep(self.BUFFER_PAUSE)
             for i, theta_value in enumerate(self.data):
                 try:
                     subcutaneous_conduction = self.gsr_data[i]
-                    ani = animation.FuncAnimation(self.fig, self.update_subcutaneous_conduction_graph, frames=self.gsr_data, blit=True)
+                    ypoints = np.array(self.gsr_data)
+                    plt.plot(ypoints, linestyle='dotted')
                     plt.show()
                 except IndexError:
                     continue
                 if recording:
                     continue
-                if i >= BRAIN_LIMIT_HIGH + 2 * self.NORMAL_STD and subcutaneous_conduction >= SUBCUTANEOUS_CONDUCTION_LIMIT_HIGH:
+                if theta_value >= BRAIN_LIMIT_HIGH + 2 * self.NORMAL_STD and subcutaneous_conduction >= SUBCUTANEOUS_CONDUCTION_LIMIT_HIGH:
                     print('measurement is too high')
                     self.run_relax_operation()
                     self.relaxing_mode = True
-                elif i < 2 * self.NORMAL_STD and self.relaxing_mode or subcutaneous_conduction < SUBCUTANEOUS_CONDUCTION_LIMIT_HIGH:
+                elif (theta_value < 2 * self.NORMAL_STD or subcutaneous_conduction < SUBCUTANEOUS_CONDUCTION_LIMIT_HIGH):
                     self.return_to_normal()
                     self.relaxing_mode = False
                 self.save_results(theta_value=theta_value, subcutaneous_conduction=subcutaneous_conduction)

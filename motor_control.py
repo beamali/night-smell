@@ -18,15 +18,18 @@ ser = serial.Serial(ARDUINO_PORT, 9600)
 
 
 def start_arduino_motor(port: str = ARDUINO_PORT):
-    ser.write(bytearray([10]))
+    ser.write(b'S')
 
 
 def stop_arduino_motor(port: str = ARDUINO_PORT):
-    ser.write(bytearray([20]))
+    ser.write(b'P')
 
 
 def read_gsr_data_from_arduino(port: str = ARDUINO_PORT) -> list[bytes]:
     data = []
-    while ser.in_waiting:
-        data.append(int(ser.readline()))
+    try:
+        while ser.in_waiting:
+            data.append(int(ser.readline()))
+    except Exception as e:
+        pass
     return data
